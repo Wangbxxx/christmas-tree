@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Merry Christmas · 极光圣诞树</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+  }
+  #stage {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    image-rendering: auto;
+  }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c" width="1600" height="900"></canvas></div>
+<script>
+(function () {
+  'use strict';
+
+  // ============ 参数（与原版 tree.py 一致）============
+  const W = 1600, H = 900;
+  const TAU = Math.PI * 2;
+
+  const TREE_POINTS   = 50000;
+  const GROUND_POINTS = 4000;
+  const STAR_POINTS   = 1200;
+  const HEART_POINTS  = 1000;
+  const SNOW2D_POINTS = 10;
+
+  const CAM_DIST   = 13;
+  const CAM_HEIGHT = 6.0;
+  const PITCH      = -0.25;
+  const TREE_HEIGHT = 12.0;
+
+  const params = new URLSearchParams(location.search);
+  const subText = params.get('msg') || params.get('name') || 'For You';
+
+  // ============ 三套氛围主题（URL 参数 ?theme=aurora|sunset|glacier）============
+  const THEMES = {
+    aurora: {
+      name: '极光午夜',
+      body:   [[0.00,'#0a4f5e'],[0.25,'#155e9c'],[0.50,'#5142b5'],[0.75,'#b14fb0'],[1.00,'#ff9ec9']],
+      ribbon: [[0.00,'#ffe0a0'],[0.30,'#ffb06b'],[0.60,'#ff7fa8'],[0.85,'#d98cff'],[1.00,'#ffe0a0']],
+      ground: [[0.00,'#3fd6e8'],[0.50,'#6a8cff'],[1.00,'#b073ff']],
+      star:   [[0.00,'#cfe4ff'],[0.50,'#e6d4ff'],[1.00,'#ffdcec']],
+      heart:  [[0.00,'#ff9ec9'],[0.50,'#ffe0a0'],[1.00,'#fff3d0']],
+      bgTop: '#0b0b20', bgBottom: '#020208', bgGlow: '#1c1246',
+      text: ['#ffe9c9', '#ffb9a0'], snow: 'rgba(215,232,255,'
+    },
+    sunset: {
+      name: '暮色熔金',
+      body:   [[0.00,'#3a1c52'],[0.25,'#832d70'],[0.50,'#c84263'],[0.75,'#f0855c'],[1.00,'#ffd58a']],
+      ribbon: [[0.00,'#fff4cf'],[0.35,'#ffc061'],[0.70,'#ff8052'],[1.00,'#fff4cf']],
+      ground: [[0.00,'#ff9a6b'],[0.50,'#d4517a'],[1.00,'#8e3b8f']],
+      star:   [[0.00,'#ffe9cf'],[0.50,'#ffd0b8'],[1.00,'#ffe0f0']],
+      heart:  [[0.00,'#ff8052'],[0.50,'#ffd58a'],[1.00,'#fff4cf']],
+      bgTop: '#1d0f26', bgBottom: '#08040c', bgGlow: '#4a1c3a',
+      text: ['#ffe6c0', '#ffb08a'], snow: 'rgba(255,235,215,'
+    },
+    glacier: {
+      name: '冰川幽蓝',
+      body:   [[0.00,'#0b3a5c'],[0.25,'#17688f'],[0.50,'#38a8c9'],[0.75,'#8ce4f2'],[1.00,'#eaffff']],
+      ribbon: [[0.00,'#ffffff'],[0.30,'#a8f0ff'],[0.60,'#5cc8f0'],[1.00,'#ffffff']],
+      ground: [[0.00,'#4fd6e8'],[0.50,'#3a9ac9'],[1.00,'#1e5a9e']],
+      star:   [[0.00,'#e6faff'],[0.50,'#cceeff'],[1.00,'#ffffff']],
+      heart:  [[0.00,'#8ce4f2'],[0.50,'#eaffff'],[1.00,'#ffffff']],
+      bgTop: '#04182b', bgBottom: '#010710', bgGlow: '#0d3a5c',
+      text: ['#e6faff', '#a8d8f0'], snow: 'rgba(230,248,255,'
+    }
+  };
+  const themeKey = THEMES[params.get('theme')] ? params.get('theme') : 'aurora';
+  const TH = THEMES[themeKey];
+
+  // ============ 渐变查找表 ============
+  function hex2rgb(h) {
+    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  }
+  function buildLut(stops) {
+    const n = 256, lut = new Uint8Array(n * 3);
+    const ss = stops.map(function (s) { return [s[0], hex2rgb(s[1])]; });
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1);
+      let a = ss[0], b = ss[ss.length - 1];
+      for (let j = 0; j < ss.length - 1; j++) {
+        if (t >= ss[j][0] && t <= ss[j + 1][0]) { a = ss[j]; b = ss[j + 1]; break; }
+      }
+      const span = (b[0] - a[0]) || 1;
+      const f = (t - a[0]) / span;
+      lut[i * 3]     = a[1][0] + (b[1][0] - a[1][0]) * f;
+      lut[i * 3 + 1] = a[1][1] + (b[1][1] - a[1][1]) * f;
+      lut[i * 3 + 2] = a[1][2] + (b[1][2] - a[1][2]) * f;
+    }
+    return lut;
+  }
+  // band: 0=树身 1=灯带 2=地面 3=星点 4=爱心
+  const LUTS = [buildLut(TH.body), buildLut(TH.ribbon), buildLut(TH.ground), buildLut(TH.star), buildLut(TH.heart)];
+
+  // 背景：垂直渐变 + 中心径向辉光（只算一次）
+  function buildBackground() {
+    const bg = new Uint32Array(W * H);
+    const top = hex2rgb(TH.bgTop), bot = hex2rgb(TH.bgBottom), glow = hex2rgb(TH.bgGlow);
+    for (let y = 0; y < H; y++) {
+      const v = y / H;
+      const br = top[0] + (bot[0] - top[0]) * v;
+      const bgG = top[1] + (bot[1] - top[1]) * v;
+      const bb = top[2] + (bot[2] - top[2]) * v;
+      for (let x = 0; x < W; x++) {
+        const dx = (x - W / 2) / (W * 0.55);
+        const dy = (y - H * 0.52) / (H * 0.7);
+        const d = Math.sqrt(dx * dx + dy * dy);
+        const g = Math.max(0, 1 - d);
+        const gl = g * g * 0.85;
+        const r = Math.min(255, br + gl * (glow[0] - br)) | 0;
+        const gg = Math.min(255, bgG + gl * (glow[1] - bgG)) | 0;
+        const b = Math.min(255, bb + gl * (glow[2] - bb)) | 0;
+        bg[y * W + x] = (255 << 24) | (b << 16) | (gg << 8) | r;
+      }
+    }
+    return bg;
+  }
+  const BG = buildBackground();
+
+  // 小工具
+  function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+  function gauss(mu, sigma) {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return mu + sigma * Math.sqrt(-2 * Math.log(u)) * Math.cos(TAU * v);
+  }
+
+  // ============ 粒子生成（位置 + 色带 + 色阶）============
+  const pos = [], bands = [], tones = [];
+  function pushPoint(x, y, z, band, tone) {
+    pos.push(x, y, z);
+    bands.push(band);
+    tones.push(Math.max(0, Math.min(255, tone)));
+  }
+
+  function genTree() {
+    const loops = 9;
+    const spiralN = Math.floor(TREE_POINTS * 0.7);
+
+    // 70% 螺旋灯带
+    for (let i = 0; i < spiralN; i++) {
+      const u = Math.random();
+      const h = Math.pow(u, 1.6);
+      const y = TREE_HEIGHT * h + 0.2;
+
+      let baseR = Math.pow(1 - h, 1.1) * 3.2;
+      const branchWave = Math.max(0, Math.sin((h * 5.8 + 0.15) * TAU));
+      baseR *= 1.0 + 0.65 * branchWave;
+
+      const t = u * loops * TAU;
+      const angle = t + (Math.random() * 0.44 - 0.22);
+      const r = baseR * (0.85 + Math.random() * 0.23);
+
+      const x = Math.cos(angle) * r;
+      const z = Math.sin(angle) * r;
+
+      // 8% 概率的亮点用灯带最亮的色阶
+      const tone = Math.random() < 0.08 ? randInt(0, 70) : (u * 255) | 0;
+      pushPoint(x, y, z, 1, tone);
+    }
+
+    // 30% 随机填充，按高度取树身渐变
+    const fillN = TREE_POINTS - spiralN;
+    for (let i = 0; i < fillN; i++) {
+      const h = Math.pow(Math.random(), 1.9);
+      const y = TREE_HEIGHT * h + 0.2 + (Math.random() * 0.16 - 0.08);
+
+      let baseR = Math.pow(1 - h, 1.1) * 4.3;
+      const branchWave = Math.max(0, Math.sin((h * 5.8 + 0.15) * TAU));
+      baseR *= 1.0 + 0.65 * branchWave;
+
+      const r = baseR * Math.sqrt(Math.random());
+      const angle = Math.random() * TAU;
+      const x = Math.cos(angle) * r + (Math.random() * 0.16 - 0.08);
+      const z = Math.sin(angle) * r + (Math.random() * 0.16 - 0.08);
+
+      pushPoint(x, y, z, 0, (h * 255 + randInt(-28, 28)) | 0);
+    }
+  }
+
+  function genGround() {
+    const rings = [4.6, 6.0, 7.4, 8.8, 10.2, 11.4];
+    for (let i = 0; i < GROUND_POINTS; i++) {
+      const ring = rings[randInt(0, rings.length - 1)];
+      const r = gauss(ring, 0.3);
+      const theta = Math.random() * TAU;
+      const x = Math.cos(theta) * r;
+      const z = Math.sin(theta) * r;
+      pushPoint(x, -0.25, z, 2, ((r - 4.6) / 6.8 * 255) | 0);
+    }
+  }
+
+  function genStars() {
+    for (let i = 0; i < STAR_POINTS; i++) {
+      const x = Math.random() * 36 - 18;
+      const z = Math.random() * 36 - 18;
+      const y = Math.random() * 15 + 3;
+      pushPoint(x, y, z, 3, randInt(0, 255));
+    }
+  }
+
+  function genHeart() {
+    const scale = 0.9;
+    const topY = TREE_HEIGHT + 0.05;
+    let count = 0;
+    while (count < HEART_POINTS) {
+      const x = Math.random() * 2.6 - 1.3;
+      const y = Math.random() * 2.8 - 1.4;
+      const f = Math.pow(x * x + y * y - 1.0, 3) - x * x * Math.pow(y, 3);
+      if (f <= 0.0) {
+        const wx = x * scale * 0.8;
+        const wy = topY + (y + 1.0) * scale * 0.5;
+        const wz = Math.random() * 0.36 - 0.18;
+        pushPoint(wx, wy, wz, 4, ((y + 1.4) / 2.8 * 255) | 0);
+        count++;
+      }
+    }
+  }
+
+  genTree();
+  genGround();
+  genStars();
+  genHeart();
+
+  const N = pos.length / 3;
+  const PX = new Float32Array(pos);
+  const BAND = new Uint8Array(bands);
+  const TONE = new Uint8Array(tones);
+
+  // ============ 前景雪花 ============
+  const flakes = [];
+  function respawn(f) {
+    f.x = Math.random() * W;
+    f.y = -80 + Math.random() * 70;
+    f.r = 10 + Math.random() * 6;
+    f.v = 30 + Math.random() * 15;
+    f.life = (H + 80 - f.y) / f.v;
+    f.max = f.life;
+  }
+  for (let i = 0; i < SNOW2D_POINTS; i++) {
+    const f = {};
+    respawn(f);
+    flakes.push(f);
+  }
+
+  // ============ 渲染 ============
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const img = ctx.createImageData(W, H);
+  const buf = new Uint32Array(img.data.buffer);
+
+  const pool = new Array(N);
+  for (let i = 0; i < N; i++) pool[i] = { d: 0, x: 0, y: 0, s: 0, b: 0, t: 0, c: 0 };
+  const active = [];
+
+  const focal = H * 0.63;
+  const cosP = Math.cos(PITCH), sinP = Math.sin(PITCH);
+
+  function plot(cx, cy, size, packedColor) {
+    const r2 = size * size + size;
+    const x0 = cx - size, x1 = cx + size;
+    const y0 = cy - size, y1 = cy + size;
+    for (let py = y0; py <= y1; py++) {
+      if (py < 0 || py >= H) continue;
+      const dy2 = (py - cy) * (py - cy);
+      const row = py * W;
+      for (let px = x0; px <= x1; px++) {
+        if (px < 0 || px >= W) continue;
+        const dx = px - cx;
+        if (dx * dx + dy2 > r2) continue;
+        buf[row + px] = packedColor;
+      }
+    }
+  }
+
+  let angle = 0;
+  let last = performance.now();
+
+  // 文字渐变
+  const textGrad = ctx.createLinearGradient(40, 0, 520, 0);
+  textGrad.addColorStop(0, TH.text[0]);
+  textGrad.addColorStop(1, TH.text[1]);
+
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.1) dt = 0.1;
+
+    angle += 0.0045 * (dt * 60);
+
+    // 各色带的流动相位：树身缓慢呼吸、灯带流光、爱心脉动
+    const ts = now * 0.001;
+    const shifts = [
+      Math.round(Math.sin(ts * 0.28) * 12),   // 树身：原地呼吸，保持上下渐变
+      (ts * 24) | 0,                          // 灯带：单向流光
+      Math.round(Math.sin(ts * 0.20) * 8),    // 地面
+      Math.round(Math.sin(ts * 0.15) * 10),   // 星点
+      (ts * 18) | 0                           // 爱心：脉动
+    ];
+
+    const cosA = Math.cos(angle), sinA = Math.sin(angle);
+    let n = 0;
+    active.length = 0;
+
+    for (let i = 0; i < N; i++) {
+      const p = i * 3;
+      const x = PX[p], y = PX[p + 1], z = PX[p + 2];
+
+      const xz = x * cosA - z * sinA;
+      const zz = x * sinA + z * cosA;
+
+      const yp = y * cosP - zz * sinP;
+      let zp = y * sinP + zz * cosP;
+      zp += CAM_DIST;
+      const ypc = yp - CAM_HEIGHT;
+      if (zp <= 0.1) continue;
+
+      const f = focal / zp;
+      const sx = (W / 2 + xz * f) | 0;
+      const sy = (H / 2 - ypc * f) | 0;
+      const size = Math.max(1, (3.6 - zp * 0.13) | 0);
+
+      const q = pool[i];
+      q.d = zp; q.x = sx; q.y = sy; q.s = size;
+      q.b = BAND[i]; q.t = TONE[i];
+      active[n++] = q;
+    }
+
+    active.sort((a, b) => b.d - a.d);
+
+    buf.set(BG);
+    for (let i = 0; i < n; i++) {
+      const q = active[i];
+      const lut = LUTS[q.b];
+      const idx = ((q.t + shifts[q.b]) & 255) * 3;
+      q.c = (255 << 24) | (lut[idx + 2] << 16) | (lut[idx + 1] << 8) | lut[idx];
+      plot(q.x, q.y, q.s, q.c);
+    }
+    ctx.putImageData(img, 0, 0);
+
+    // 文字
+    ctx.font = "45px 'Monotype Corsiva', 'Segoe Script', cursive";
+    ctx.fillStyle = textGrad;
+    ctx.textBaseline = 'top';
+    ctx.shadowColor = TH.text[0];
+    ctx.shadowBlur = 14;
+    ctx.fillText('Merry Christmas', 40, H / 3);
+    ctx.fillText(subText, 40, H / 3 + 60);
+    ctx.shadowBlur = 0;
+
+    // 前景雪花
+    for (let i = 0; i < flakes.length; i++) {
+      const f = flakes[i];
+      f.y += f.v * dt;
+      f.life -= dt;
+      if (f.life <= 0 || f.y > H + 50) {
+        respawn(f);
+        continue;
+      }
+      const phase = f.life / f.max;
+      let alpha = phase > 0.3 ? 255 : Math.floor(255 * (phase / 0.3));
+      alpha = Math.max(0, Math.min(255, alpha));
+
+      const cx = f.x | 0, cy = f.y | 0;
+      const layers = [
+        [f.r * 1.3, alpha / 20],
+        [f.r * 1.0, alpha / 12],
+        [f.r * 0.75, alpha / 6],
+        [f.r * 0.55, alpha / 3],
+        [f.r * 0.45, alpha]
+      ];
+      for (let L = 0; L < layers.length; L++) {
+        const rr = Math.max(1, layers[L][0]);
+        const a = Math.max(0, layers[L][1]) / 255;
+        if (a <= 0) continue;
+        ctx.beginPath();
+        ctx.arc(cx, cy, rr, 0, TAU);
+        ctx.fillStyle = TH.snow + a + ')';
+        ctx.fill();
+      }
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
